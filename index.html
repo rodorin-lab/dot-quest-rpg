@@ -50,6 +50,7 @@
   <div id="btnA" class="ab">A<small>けってい</small></div>
 </div>
 <noscript>JavaScript を有効にしてください。</noscript>
+<script src="js/tactics.js"></script>
 <script>
 (() => {
 'use strict';
@@ -1005,14 +1006,89 @@ function drawBattleUI() {
   }
 }
 
+// ================= 独立したSRPG訓練 =================
+let tactical, tacticalCursor, tacticalText, enemyQueue, enemyDelay;
+const TX=20, TY=24, CELL=20;
+function startTactics() {
+  tactical=new DQTactics.Battle(); tacticalCursor={x:1,y:3};
+  tacticalText='青マスへ移動 → 赤い敵へ攻撃';
+  enemyQueue=[];enemyDelay=0;ui=[];scene='tactics';playBGM('battle');
+}
+function leaveTactics(){scene='title';ui=[];stopBGM();openTitleMenu();}
+function finishTactics(){
+  if(!tactical.result)return false;
+  tacticalText=tactical.result==='victory'?'勝利！ Aで再挑戦 / Bで戻る':'敗北… Aで再挑戦 / Bで戻る';
+  stopBGM();sfx(tactical.result==='victory'?'win':'dead');return true;
+}
+function scheduleEnemies(){
+  if(finishTactics())return;
+  enemyQueue=tactical.alive.filter(u=>u.team==='enemy').map(u=>u.id);enemyDelay=36;
+}
+function tacticalAction(x,y){
+  if(tactical.phase!=='player')return;
+  tacticalCursor={x,y};
+  const enemy=tactical.alive.find(u=>u.team==='enemy'&&u.x===x&&u.y===y);
+  if(enemy){
+    const damage=tactical.attack(enemy.id);
+    if(damage===null){tacticalText='射程外！ 隣のマスへ近づこう';sfx('bump');return;}
+    tacticalText=enemy.name+'に '+damage+' ダメージ！';sfx('hit');scheduleEnemies();
+  }else if(x===tactical.hero.x&&y===tactical.hero.y){
+    tactical.wait();tacticalText='待機。敵のターン';scheduleEnemies();
+  }else if(tactical.move(x,y)){tacticalText='隣の敵を攻撃 / 自分を選んで待機';sfx('ok');}
+  else{tacticalText=tactical.moved?'移動済み。攻撃か待機を選ぼう':'そこへは移動できない';sfx('bump');}
+}
+function updateTactics(){
+  if(inp.p.b){leaveTactics();return;}
+  if(tactical.result){if(inp.p.a)startTactics();return;}
+  if(tactical.phase==='enemy'){
+    if(--enemyDelay>0)return;
+    const id=enemyQueue.shift();
+    if(id){const action=tactical.enemyAct(id);if(action){tacticalText=action.unit.name+(action.damage?'の攻撃！ '+action.damage+' ダメージ':'が移動した');sfx(action.damage?'hurt':'cur');}enemyDelay=36;finishTactics();}
+    else{tactical.nextTurn();tacticalCursor={x:tactical.hero.x,y:tactical.hero.y};tacticalText='青マスへ移動 / 自分を選んで待機';}
+    return;
+  }
+  for(const d of ['up','down','left','right'])if(rep(d)){const [dx,dy]=DV[d];tacticalCursor.x=clamp(tacticalCursor.x+dx,0,9);tacticalCursor.y=clamp(tacticalCursor.y+dy,0,5);sfx('cur');}
+  if(inp.p.a)tacticalAction(tacticalCursor.x,tacticalCursor.y);
+}
+function drawTactics(){
+  lx.fillStyle='#101829';lx.fillRect(0,0,BW,BH);
+  const reach=tactical.phase==='player'&&!tactical.moved?tactical.reachable(tactical.hero):[];
+  for(let y=0;y<6;y++)for(let x=0;x<10;x++){
+    const px=TX+x*CELL,py=TY+y*CELL;
+    lx.drawImage(tileImg(tactical.map[y][x]==='#'?'X':'.',0,0),px,py,CELL,CELL);
+    if(reach.some(p=>p.x===x&&p.y===y)){lx.fillStyle='rgba(30,160,255,.4)';lx.fillRect(px,py,CELL,CELL);}
+    lx.strokeStyle='#253b36';lx.strokeRect(px+.5,py+.5,CELL-1,CELL-1);
+  }
+  for(const u of tactical.alive){
+    const px=TX+u.x*CELL,py=TY+u.y*CELL;
+    if(u.team==='player')lx.drawImage(SPR.hero.down[(frame>>4)%2],px+2,py+1);
+    else lx.drawImage(ENEMIES[u.sprite].img,px+2,py+1,16,16);
+    lx.fillStyle='#111';lx.fillRect(px+2,py+17,16,2);lx.fillStyle=u.team==='player'?'#5de6ff':'#ff7474';lx.fillRect(px+2,py+17,16*u.hp/u.maxHp,2);
+    if(tactical.phase==='player'&&tactical.canAttack(tactical.hero,u)){lx.strokeStyle='#ff7474';lx.strokeRect(px+1,py+1,18,18);}
+  }
+  lx.strokeStyle='#ffe070';lx.strokeRect(TX+tacticalCursor.x*CELL+1,TY+tacticalCursor.y*CELL+1,18,18);
+}
+function drawTacticsUI(){
+  txt('訓練 '+tactical.turn+' / '+(tactical.phase==='enemy'?'敵のターン':'勇者のターン'),8,5,9,'#ffe070');
+  txt('HP '+tactical.hero.hp+'/32',BW-8,5,9,'#8ee8ff','right');
+  txt(tacticalText,BW/2,147,9,'#fff','center');
+  txt('移動3・射程1 / B:戻る',8,163,8,'#aaa');
+  const label=tactical.result?'再挑戦':'待機';
+  win(176,158,60,18);txt(label,206,162,9,'#ffe070','center');
+  addHit(176,158,60,18,()=>{if(tactical.result)startTactics();else if(tactical.wait()){tacticalText='待機。敵のターン';scheduleEnemies();}});
+  if(tactical.phase==='player')for(let y=0;y<6;y++)for(let x=0;x<10;x++)addHit(TX+x*CELL,TY+y*CELL,CELL,CELL,()=>tacticalAction(x,y));
+  if(tactical.result)addHit(TX,TY,200,120,startTactics);
+}
+
 // ================= タイトル / エンディング =================
 let scene = 'title';
 const stars = Array.from({ length: 60 }, (_, i) => [hash(i, 1) % BW, hash(i, 2) % 110, hash(i, 3) % 3]);
 function openTitleMenu() {
   ui = [];
-  const m = new Menu({ items: [{ label: 'はじめから' }, { label: 'つづきから', dis: !hasSave() }], w: 120, ih: 24, size: 13 });
+  const m = new Menu({ items: [{ label: 'はじめから' }, { label: 'つづきから', dis: !hasSave() }, { label: 'SRPGおためし' }], w: 140, ih: 19, size: 12 });
   m.x = (BW - m.w) / 2; m.y = 100; m.cur = hasSave() ? 1 : 0;
   m.onSelect = i => {
+    if (i === 2) { startTactics(); return; }
     if (i === 0) newGame(); else load();
     ui = [];
     fadeTo(() => { scene = 'field'; playBGM(curMap === 'cave' ? 'cave' : 'field'); }, 18, () => {
@@ -1070,12 +1146,14 @@ function update() {
   const top = topUI();
   if (scene === 'title') { if (top) top.update(); else if (inp.p.a || inp.p.b) { sfx('ok'); openTitleMenu(); } return; }
   if (scene === 'ending') { endT++; if (endT > 120 && inp.p.a) { stopBGM(); fadeTo(() => { scene = 'title'; ui = []; }, 30); } return; }
+  if (scene === 'tactics') { updateTactics(); return; }
   if (scene === 'battle') { if (top) top.update(); updateBattle(); return; }
   if (scene === 'field') { if (top) { updateNpcs(); top.update(); } else updateField(); }
 }
 function render() {
   hits = [];
   if (scene === 'title') drawTitleLo();
+  else if (scene === 'tactics') drawTactics();
   else if (scene === 'field') drawField();
   else if (scene === 'battle') drawBattle();
   else if (scene === 'ending') drawEnding();
@@ -1089,6 +1167,7 @@ function render() {
   // 文字・ウィンドウは実解像度で描画（にじまない）
   ctx.setTransform(S, 0, 0, S, 0, 0);
   if (scene === 'battle') { if (battle.red > 0) { ctx.fillStyle = `rgba(255,0,0,${battle.red * 0.03})`; ctx.fillRect(0, 0, BW, BH); } drawBattleUI(); }
+  if (scene === 'tactics') drawTacticsUI();
   if (scene === 'field') drawFieldHUD();
   if (scene === 'title') drawTitleUI();
   if (scene === 'ending') drawEndingUI();
@@ -1106,7 +1185,7 @@ function loop(now) {
 layout(); setTimeout(layout, 300);
 requestAnimationFrame(loop);
 // テスト用フック
-window.__dq = { get scene() { return scene; }, get hero() { return hero; }, get pl() { return pl; }, get ui() { return ui; }, get battle() { return battle; }, get map() { return curMap; },
+window.__dq = { startTactics, get tactics() { return tactical; }, get scene() { return scene; }, get hero() { return hero; }, get pl() { return pl; }, get ui() { return ui; }, get battle() { return battle; }, get map() { return curMap; },
   get flags() { return flags; }, get audio() { return ac ? ac.state : 'none'; }, get S() { return S; }, MAPS, CHESTS, npcs: () => npcs,
   startBattle, warp(m, x, y, d = 'down') { curMap = m; pl = mkPlayer(x, y, d); } };
 })();
